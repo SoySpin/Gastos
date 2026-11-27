@@ -786,54 +786,19 @@
         // ==================== UTILIDADES ====================
         function isAdminUser(phone) {
             if (!phone) return false;
-            return phone.endsWith(ADMIN_ALLOWED_RAW_PHONE);
+            return phone.replace(/\D/g, '').endsWith(ADMIN_ALLOWED_RAW_PHONE);
         }
 
         function formatMXN(amount) {
-            const num = Number(amount) || 0;
-            return num.toLocaleString('es-MX', { style: 'currency', currency: 'MXN' });
-        }
-
-        function showToast(msg, isError = false) {
-            const toast = document.getElementById('toast');
-            const icon = document.getElementById('toast-icon');
-            document.getElementById('toast-msg').textContent = msg;
-            icon.className = isError ? 'fa-solid fa-circle-exclamation text-rose-400' : 'fa-solid fa-circle-check text-emerald-400';
-            toast.classList.remove('hidden');
-            toast.classList.add('flex');
-            setTimeout(() => {
-                toast.classList.add('hidden');
-                toast.classList.remove('flex');
-            }, 3500);
-        }
-
-        window.openModal = (id) => {
-            const el = document.getElementById(id);
-            el.classList.remove('hidden');
-            el.classList.add('flex');
-        };
-
-        window.closeModal = (id) => {
-            const el = document.getElementById(id);
-            el.classList.add('hidden');
-            el.classList.remove('flex');
-        };
-
-        function openConfirmModal(title, message, callback) {
-            document.getElementById('confirm-title').textContent = title;
-            document.getElementById('confirm-message').textContent = message;
-            state.confirmCallback = callback;
-            openModal('confirm-modal');
-        }
-
-        function closeConfirmModal() {
-            closeModal('confirm-modal');
-            state.confirmCallback = null;
+            return new Intl.NumberFormat('es-MX', {
+                style: 'currency',
+                currency: 'MXN',
+                minimumFractionDigits: 2
+            }).format(Number(amount) || 0) + ' MXN';
         }
 
         function getExpenseCategories() {
-            const custom = Array.isArray(state.settings.customCategories) ? state.settings.customCategories : [];
-            return [...BASE_EXPENSE_CATEGORIES, ...custom];
+            return [...BASE_EXPENSE_CATEGORIES, ...(state.settings.customCategories || [])];
         }
 
         function getCategoryMeta(catId) {
@@ -841,32 +806,100 @@
             return all.find(c => c.id === catId) || { id: catId, name: catId, icon: 'fa-tag', color: '#64748b' };
         }
 
-        // ==================== SINCRONIZACIÓN SUPABASE ====================
+        window.openModal = (id) => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.classList.remove('hidden');
+                el.classList.add('flex');
+            }
+        };
+
+        window.closeModal = (id) => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.classList.add('hidden');
+                el.classList.remove('flex');
+            }
+        };
+
+        function openConfirmModal(title, message, onConfirm) {
+            document.getElementById('confirm-title').textContent = title;
+            document.getElementById('confirm-message').textContent = message;
+            state.confirmCallback = onConfirm;
+            openModal('confirm-modal');
+        }
+
+        function closeConfirmModal() {
+            state.confirmCallback = null;
+            closeModal('confirm-modal');
+        }
+
+        function showToast(msg, isWarning = false) {
+            const toast = document.getElementById('toast');
+            const icon = document.getElementById('toast-icon');
+            const text = document.getElementById('toast-msg');
+            text.textContent = msg;
+            icon.className = isWarning
+                ? 'fa-solid fa-triangle-exclamation text-amber-400'
+                : 'fa-solid fa-circle-check text-emerald-400';
+            toast.classList.remove('hidden');
+            toast.classList.add('flex');
+            clearTimeout(window._toastTimer);
+            window._toastTimer = setTimeout(() => {
+                toast.classList.add('hidden');
+                toast.classList.remove('flex');
+            }, 3500);
+        }
+
+        // ==================== RESPALDO LOCAL + SINCRONIZACIÓN SUPABASE ====================
+        function getLocalWalletsMap() {
+            try {
+                return JSON.parse(localStorage.getItem('micartera_local_wallets') || '{}');
+            } catch (_) {
+                return {};
+            }
+        }
+
+        function saveWalletLocally(walletObj) {
+            try {
+                const map = getLocalWalletsMap();
+                map[walletObj.phone] = walletObj;
+                localStorage.setItem('micartera_local_wallets', JSON.stringify(map));
+            } catch (_) {}
+        }
+
         async function syncToCloud() {
             if (!state.user) return;
             const badge = document.getElementById('sync-badge');
             badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-amber-500 sync-pulse"></span> Guardando...';
             sessionStorage.setItem('micartera_session', JSON.stringify(state.user));
 
+            const payload = {
+                phone: state.user.phone,
+                name: state.user.name,
+                pin: state.user.pin,
+                transactions: state.transactions,
+                budgets: state.budgets,
+                savings: state.savings,
+                cards: state.cards,
+                settings: state.settings
+            };
+
+            // Guardar siempre copia instantánea en el dispositivo
+            saveWalletLocally(payload);
+
             try {
                 const { error } = await supabase
                     .from('user_wallets')
-                    .upsert({
-                        phone: state.user.phone,
-                        name: state.user.name,
-                        pin: state.user.pin,
-                        transactions: state.transactions,
-                        budgets: state.budgets,
-                        savings: state.savings,
-                        cards: state.cards,
-                        settings: state.settings
-                    }, { onConflict: 'phone' });
+                    .upsert(payload, { onConflict: 'phone' });
 
                 if (error) throw error;
+                badge.className = 'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200';
                 badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Nube Activa';
             } catch (err) {
-                console.error('Error sincronizando con Supabase:', err);
-                badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-rose-500"></span> Sin conexión';
+                console.warn('Modo local activo (sin alcance a Supabase):', err);
+                badge.className = 'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200';
+                badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span> Guardado Local';
             }
         }
 
@@ -913,22 +946,40 @@
             btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Verificando...';
 
             try {
-                const { data, error } = await supabase
-                    .from('user_wallets')
-                    .select('*')
-                    .eq('phone', fullPhone)
-                    .maybeSingle();
+                let walletRecord = null;
+                let cloudReached = false;
 
-                if (error) throw error;
-                if (!data) {
-                    showAuthFeedback('No encontramos este número. Ve a "Crear Usuario" para registrarlo.');
-                } else if (data.pin !== pin) {
+                try {
+                    const { data, error } = await supabase
+                        .from('user_wallets')
+                        .select('*')
+                        .eq('phone', fullPhone)
+                        .maybeSingle();
+
+                    if (error) throw error;
+                    cloudReached = true;
+                    walletRecord = data;
+                } catch (cloudErr) {
+                    console.warn('Usando respaldo local por error de red:', cloudErr);
+                    const localMap = getLocalWalletsMap();
+                    walletRecord = localMap[fullPhone] || null;
+                }
+
+                if (!walletRecord) {
+                    if (!cloudReached) {
+                        showAuthFeedback('No hay conexión con Supabase en este entorno y no existe copia local. Ve a "Crear Usuario" o verifica que tu proyecto Supabase esté activo.');
+                    } else {
+                        showAuthFeedback('No encontramos este número. Ve a "Crear Usuario" para registrarlo.');
+                    }
+                } else if (walletRecord.pin !== pin) {
                     showAuthFeedback('PIN incorrecto. Intenta de nuevo.');
                 } else {
-                    loadWalletIntoApp(data);
+                    saveWalletLocally(walletRecord);
+                    loadWalletIntoApp(walletRecord);
+                    if (!cloudReached) {
+                        showToast('Entraste en modo local (revisa tu proyecto Supabase para sincronizar nube)', true);
+                    }
                 }
-            } catch (err) {
-                showAuthFeedback('Error al conectar con la base de datos: ' + err.message);
             } finally {
                 btn.disabled = false;
                 btn.innerHTML = '<span>Abrir mi Cartera</span> <i class="fa-solid fa-arrow-right"></i>';
@@ -952,17 +1003,6 @@
             btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Creando cuenta...';
 
             try {
-                const { data: existing } = await supabase
-                    .from('user_wallets')
-                    .select('phone')
-                    .eq('phone', fullPhone)
-                    .maybeSingle();
-
-                if (existing) {
-                    showAuthFeedback('Este número ya está registrado. Inicia sesión en la pestaña "Entrar".');
-                    return;
-                }
-
                 const defaultCards = [
                     { id: 'card-cash', name: 'Efectivo / Cartera', type: 'debit', limit: 0 }
                 ];
@@ -993,13 +1033,39 @@
                     settings: initialSettings
                 };
 
-                const { error } = await supabase.from('user_wallets').insert(newWallet);
-                if (error) throw error;
+                let syncedToCloud = false;
+                try {
+                    const { data: existing, error: checkErr } = await supabase
+                        .from('user_wallets')
+                        .select('phone')
+                        .eq('phone', fullPhone)
+                        .maybeSingle();
 
+                    if (checkErr) throw checkErr;
+                    if (existing) {
+                        showAuthFeedback('Este número ya está registrado. Inicia sesión en la pestaña "Entrar".');
+                        return;
+                    }
+
+                    const { error: insertErr } = await supabase.from('user_wallets').insert(newWallet);
+                    if (insertErr) throw insertErr;
+                    syncedToCloud = true;
+                } catch (cloudErr) {
+                    console.warn('Creando cuenta en modo local:', cloudErr);
+                    const localMap = getLocalWalletsMap();
+                    if (localMap[fullPhone]) {
+                        showAuthFeedback('Este número ya está registrado localmente. Inicia sesión en "Entrar".');
+                        return;
+                    }
+                }
+
+                saveWalletLocally(newWallet);
                 loadWalletIntoApp(newWallet);
-                showToast(`¡Bienvenido(a), ${name}!`);
-            } catch (err) {
-                showAuthFeedback('No se pudo crear el usuario: ' + err.message);
+                if (syncedToCloud) {
+                    showToast(`¡Bienvenido(a), ${name}! Cuenta sincronizada en la nube.`);
+                } else {
+                    showToast(`¡Bienvenido(a), ${name}! Cuenta creada en modo local.`, true);
+                }
             } finally {
                 btn.disabled = false;
                 btn.innerHTML = '<i class="fa-solid fa-user-plus"></i> <span>Crear Cuenta y Entrar</span>';
@@ -2184,9 +2250,16 @@
             if (savedSession) {
                 try {
                     const parsed = JSON.parse(savedSession);
-                    const { data } = await supabase.from('user_wallets').select('*').eq('phone', parsed.phone).maybeSingle();
-                    if (data && data.pin === parsed.pin) {
-                        loadWalletIntoApp(data);
+                    let wallet = null;
+                    try {
+                        const { data, error } = await supabase.from('user_wallets').select('*').eq('phone', parsed.phone).maybeSingle();
+                        if (!error && data) wallet = data;
+                    } catch (_) {}
+                    if (!wallet) {
+                        wallet = getLocalWalletsMap()[parsed.phone] || null;
+                    }
+                    if (wallet && wallet.pin === parsed.pin) {
+                        loadWalletIntoApp(wallet);
                     }
                 } catch (_) {}
             }
